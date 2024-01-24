@@ -5,47 +5,17 @@ import (
 	"github.com/sandmannmax/go-trade/internal/money"
 )
 
-type order struct {
-	volume float64
-	isBid  bool
-}
-
-func (o order) IsFilled() bool {
-	return o.volume == 0
-}
-
-func (o order) Type() string {
-	if o.isBid {
-		return "BID"
-	}
-	return "ASK"
-}
-
-func getMinMax(o1 *order, o2 *order) (*order, *order) {
-	if o2.volume < o1.volume {
-		return o2, o1
-	}
-
-	return o1, o2
-}
-
-type limitOrder struct {
-	order
-	price  money.Money
-	orders []*order
-}
-
 type orderbook struct {
-	askOrders map[money.Money]*limitOrder
+	askOrders *limitOrderList
 	askVolume float64
-	bidOrders map[money.Money]*limitOrder
+	bidOrders *limitOrderList
 	bidVolume float64
 }
 
 func NewOrderBook() *orderbook {
 	return &orderbook{
-		askOrders: make(map[money.Money]*limitOrder),
-		bidOrders: make(map[money.Money]*limitOrder),
+		askOrders: &limitOrderList{isBidList: false},
+		bidOrders: &limitOrderList{isBidList: true},
 	}
 }
 
@@ -67,21 +37,21 @@ func (o *orderbook) CreateLimitOrder(p LimitOrderParams) {
 		volume = &o.bidVolume
 	}
 
-	if val, ok := orders[p.price]; ok {
+	if val, ok := orders.Find(p.price); ok {
 		val.orders = append(val.orders, newOrder)
 		val.volume += newOrder.volume
 		*volume += newOrder.volume
 		return
 	}
 
-	orders[p.price] = &limitOrder{
+	orders.Add(p.price, &limitOrder{
 		price: p.price,
 		order: order{
 			isBid:  p.isBid,
 			volume: p.volume,
 		},
 		orders: []*order{newOrder},
-	}
+	})
 	*volume += newOrder.volume
 }
 
@@ -114,7 +84,7 @@ func (o *orderbook) CreateMarketOrder(p MarketOrderParams) {
 		return
 	}
 
-	for price, limitOrder := range correspondingOrders {
+	for _, limitOrder := range correspondingOrders.Iterator() {
 		for _, order := range limitOrder.orders {
 			minOrder, maxOrder := getMinMax(newOrder, order)
 			filledVolume := minOrder.volume
@@ -124,7 +94,7 @@ func (o *orderbook) CreateMarketOrder(p MarketOrderParams) {
 			*correspondingVolume -= filledVolume
 
 			if order.IsFilled() {
-				log.Info().Str("price", price.Display()).Float64("volume", filledVolume).Str("type", limitOrder.Type()).Msg("limit order filled")
+				log.Info().Str("price", limitOrder.price.Display()).Float64("volume", filledVolume).Str("type", limitOrder.Type()).Msg("limit order filled")
 				if len(limitOrder.orders) == 1 {
 					limitOrder.orders = nil
 				} else {
@@ -139,7 +109,8 @@ func (o *orderbook) CreateMarketOrder(p MarketOrderParams) {
 		}
 
 		if limitOrder.IsFilled() {
-			delete(correspondingOrders, price)
+			correspondingOrders.Delete(limitOrder.price)
+			// delete(correspondingOrders, price)
 		}
 
 		if newOrder.IsFilled() {
